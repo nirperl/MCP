@@ -6,8 +6,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # 1. Configuration
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_API_KEY)
+model_key = os.getenv("GEMINI_API_KEY") #os.environ.get("GEMINI_API_KEY")
+client = genai.Client(api_key=model_key)
 model_id = "gemini-2.0-flash"  # High-speed model great for automation loops
 
 # Path to your server.py file
@@ -21,45 +21,50 @@ async def healing_loop():
 
             # --- 2. Initial Test Run ---
             print("🔍 Running tests via MCP...")
-            test_output = await session.call_tool("run_tests", {})
-
-            # Extract text from MCP tool response
+            test_output = await asyncio.wait_for(session.call_tool("run_tests", {}), timeout=60)
             test_results = test_output.content[0].text if test_output.content else ""
 
             if "FAILED" in test_results:
                 print("❌ Tests failed. Starting Gemini healing loop...")
 
-                # --- 3. Discover MCP Tools & Convert for Gemini ---
+                # Read the code directly to simplify the agent's job
+                with open("logic.py", "r") as f:
+                    code_content = f.read()
+
+                # --- 3. Discover MCP Tools ---
                 mcp_tools = await session.list_tools()
                 gemini_tools = types.Tool(
                     function_declarations=[
-                        {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.inputSchema,
-                        } for tool in mcp_tools.tools
+                        types.FunctionDeclaration(
+                            name=tool.name,
+                            description=tool.description,
+                            parameters=tool.inputSchema,
+                        ) for tool in mcp_tools.tools
                     ]
                 )
 
                 # --- 4. Agentic Reasoning & Fixing ---
-                prompt = f"The unit tests failed with this output: {test_results}. Please read the source code and apply a fix."
+                prompt = (
+                    f"The unit tests failed.\n\n"
+                    f"Test Output:\n{test_results}\n\n"
+                    f"Current logic.py:\n{code_content}\n\n"
+                    f"Please apply a fix to logic.py."
+                )
 
-                # Gemini automatically handles the "Thought -> Tool Call" decision
                 response = client.models.generate_content(
                     model=model_id,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         tools=[gemini_tools],
-                        temperature=0  # Use 0 for deterministic coding tasks
+                        temperature=0
                     )
                 )
 
-                # --- 5. Handle Tool Calls (The "Heal") ---
+                # --- 5. Handle Tool Calls ---
                 if response.candidates[0].content.parts[0].function_call:
                     fc = response.candidates[0].content.parts[0].function_call
                     print(f"🛠️ Gemini decided to call: {fc.name}")
 
-                    # Execute the tool via MCP
                     result = await session.call_tool(fc.name, fc.args)
                     print(f"✅ Fix applied! Result: {result.content[0].text}")
 

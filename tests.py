@@ -1,3 +1,5 @@
+import subprocess
+
 from logic import get_num
 
 
